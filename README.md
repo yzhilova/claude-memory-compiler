@@ -2,6 +2,13 @@
 
 **Your AI conversations compile themselves into a searchable knowledge base.**
 
+> **Fork note.** This is a patched fork of [coleam00/claude-memory-compiler](https://github.com/coleam00/claude-memory-compiler) maintained for reuse across multiple projects. Fixes on top of upstream:
+> - **Capture actually fires on Claude Desktop** — `SessionEnd` never runs there ([claude-code#45514](https://github.com/anthropics/claude-code/issues/45514)), so capture is driven from `SessionStart` via a bounded, detached `backfill --sweep`.
+> - **Sweep is scoped to the current project** — without `--project` the sweep ingested sessions from *every* repo under `~/.claude/projects/`; it now derives and passes the project id (using the `--project=` form, since the id starts with `-`).
+> - **Headless auth** — `flush.py`/`compile.py` load `CLAUDE_CODE_OAUTH_TOKEN` from `.env` so the spawned CLI authenticates outside the desktop app.
+> - **Compile prompt no longer scales O(N)** — it stopped inlining every article body (which blew past the input window as the KB grew) in favor of index-guided retrieval.
+> - Concurrency lock against duplicate daily-log blocks; captured CLI stderr in `FLUSH_ERROR`; compact, never-truncated context catalog at session start.
+
 Adapted from [Karpathy's LLM Knowledge Base](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) architecture, but instead of clipping web articles, the raw data is your own conversations with Claude Code. When a session ends (or auto-compacts mid-session), Claude Code hooks capture the conversation transcript and spawn a background process that uses the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk) to extract the important stuff - decisions, lessons learned, patterns, gotchas - and appends it to a daily log. You then compile those daily logs into structured, cross-referenced knowledge articles organized by concept. Retrieval uses a simple index file instead of RAG - no vector database, no embeddings, just markdown.
 
 Anthropic has clarified that personal use of the Claude Agent SDK is covered under your existing Claude subscription (Max, Team, or Enterprise) - no separate API credits needed. Unlike OpenClaw, which requires API billing for its memory flush, this runs on your subscription.
