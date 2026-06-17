@@ -212,37 +212,51 @@ def build_context() -> str:
     return context
 
 
-def read_active_session_id() -> str:
-    """Best-effort: get the current session id so the sweep skips it.
+def read_session_info() -> tuple[str, str]:
+    """Best-effort: read the SessionStart hook's stdin JSON ONCE and return
+    (session_id, project_dir). stdin can only be consumed once, so both fields
+    come from a single read. Never raises.
 
-    SessionStart hook input arrives as JSON on stdin; fall back to the
-    CLAUDE_CODE_SESSION_ID env var the desktop app sets. Never raise — a
-    missing id just means we don't pass --exclude (still safe: the active
-    session is the newest transcript and usually has too few turns or is
-    re-swept harmlessly next time via the resumable state).
+    - session_id lets the sweep --exclude the still-being-written active
+      session. Falls back to the CLAUDE_CODE_SESSION_ID env var.
+    - project_dir is the `~/.claude/projects/<dir>` name for THIS session,
+      taken from the hook's `transcript_path` (ground truth — it literally is
+      that transcript file's parent dir). This scopes the sweep correctly no
+      matter where the vault sits relative to the project root, instead of
+      assuming a fixed nesting depth. "" when unavailable (caller defaults).
     """
+    session_id = ""
+    project_dir = ""
     try:
         raw = sys.stdin.read()
         if raw and raw.strip():
             data = json.loads(raw)
             sid = data.get("session_id")
             if isinstance(sid, str) and sid:
-                return sid
+                session_id = sid
+            tp = data.get("transcript_path")
+            if isinstance(tp, str) and tp:
+                # ~/.claude/projects/<project_dir>/<session_id>.jsonl
+                project_dir = Path(tp).parent.name
     except Exception:
         pass
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not session_id:
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    return session_id, project_dir
 
 
-def spawn_sweep(active_session_id: str) -> None:
+def spawn_sweep(active_session_id: str, project_dir: str = "") -> None:
     """Fire-and-forget the bounded prior-session flush. Best-effort."""
     backfill = SCRIPTS_DIR / "backfill.py"
     if not backfill.exists():
         return
-    uv = shutil.which("uv") or "/Users/yulianovozhilova/.local/bin/uv"
-    # Scope the sweep to THIS vault's own project. Without --project,
-    # backfill.py globs every ~/.claude/projects/* dir and captures sessions
-    # from unrelated repos into this react-email vault.
-    project = str(ROOT.parent).replace("/", "-")
+    uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
+    # Scope the sweep to THIS session's project. Without --project, backfill.py
+    # globs every ~/.claude/projects/* dir and captures unrelated repos'
+    # sessions into this vault. Prefer the project dir from the hook's
+    # transcript_path (ground truth); fall back to deriving it from the vault
+    # path, which assumes the vault is nested one level under the project root.
+    project = project_dir or str(ROOT.parent).replace("/", "-")
     cmd = [
         uv, "run", "--directory", str(ROOT), "python", str(backfill),
         "--sweep",
@@ -268,8 +282,9 @@ def spawn_sweep(active_session_id: str) -> None:
 
 
 def main():
-    # Read stdin FIRST (it carries session_id) before any stdout write.
-    active_session_id = read_active_session_id()
+    # Read stdin FIRST (it carries session_id + transcript_path) before any
+    # stdout write.
+    active_session_id, project_dir = read_session_info()
 
     # Job 1 — context injection (critical path, must always happen).
     context = build_context()
@@ -283,7 +298,7 @@ def main():
     sys.stdout.flush()
 
     # Job 2 — capture trigger (best-effort, detached, after the JSON is out).
-    spawn_sweep(active_session_id)
+    spawn_sweep(active_session_id, project_dir)
 
 
 if __name__ == "__main__":
