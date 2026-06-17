@@ -17,16 +17,67 @@ Anthropic has clarified that personal use of the Claude Agent SDK is covered und
 
 ## Quick Start
 
-Tell your AI coding agent:
+This fork ships a Claude Code skill that does the whole setup for you. Install
+it once, then run it in any project.
 
-> "Clone https://github.com/coleam00/claude-memory-compiler into this project. Set up the Claude Code hooks so my conversations automatically get captured into daily logs, compiled into a knowledge base, and injected back into future sessions. Read the AGENTS.md for the full technical reference on how everything works."
+### 1. Install the skill (once per machine)
 
-The agent will:
-1. Clone the repo and run `uv sync` to install dependencies
-2. Copy `.claude/settings.json` into your project (or merge the hooks into your existing settings)
-3. The hooks activate automatically next time you open Claude Code
+Clone this fork somewhere permanent, then symlink the skill into Claude Code's
+user-level skills directory so it's available in every project:
 
-From there, your conversations start accumulating. After 6 PM local time, the next session flush automatically triggers compilation of that day's logs into knowledge articles. You can also run `uv run python scripts/compile.py` manually at any time.
+```bash
+git clone https://github.com/yzhilova/claude-memory-compiler ~/claude-memory-compiler
+mkdir -p ~/.claude/skills
+ln -sfn ~/claude-memory-compiler/skills/obsidian-kb-setup ~/.claude/skills/obsidian-kb-setup
+```
+
+The symlink keeps the skill in sync when you `git pull`. (Use `cp -r` instead for a detached copy.)
+
+### 2. Run it in a project
+
+From the project root, in Claude Code:
+
+```
+/obsidian-kb-setup
+```
+
+It clones the fork into a self-contained `./claude-memory-compiler/` subdirectory,
+wires the project hooks, seeds `.env` auth (it asks you for a `claude setup-token`
+value if one isn't already in your environment), and registers the Obsidian
+vault. The only thing added to your project root is `.claude/settings.json`.
+
+### 3. Verify it's set up correctly
+
+Reopen Claude Code in the project (hooks load at session start), then confirm:
+
+- **Context injection** — a "Knowledge Base Catalog" block appears in the new session. That's the SessionStart hook firing.
+- **Auth** (background capture depends on it):
+  ```bash
+  uv run --directory claude-memory-compiler python -c "from dotenv import load_dotenv; import os; load_dotenv('.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
+  ```
+  Expect `token present: True`.
+- **Structural health**:
+  ```bash
+  uv run --directory claude-memory-compiler python scripts/lint.py --structural-only
+  ```
+- **Obsidian** — the vault appears in the switcher as `<project>/claude-memory-compiler`.
+
+From there your conversations accumulate in `claude-memory-compiler/daily/`. After
+6 PM local time, the next flush auto-triggers compilation of that day's logs into
+knowledge articles; you can also run it manually any time:
+
+```bash
+uv run --directory claude-memory-compiler python scripts/compile.py
+```
+
+> **Prefer to wire it up by hand?** Tell your AI coding agent: *"Clone
+> https://github.com/yzhilova/claude-memory-compiler into a
+> `claude-memory-compiler/` subfolder of this project and `uv sync` it. Add a
+> project-root `.claude/settings.json` whose SessionStart/PreCompact/SessionEnd
+> hooks run that subfolder's `hooks/*.py` via `uv run --directory
+> claude-memory-compiler` (merge, don't overwrite). Create
+> `claude-memory-compiler/.env` with my `CLAUDE_CODE_OAUTH_TOKEN`. Read its
+> AGENTS.md for the full technical reference."*
 
 ## How It Works
 
@@ -36,13 +87,15 @@ Conversation -> SessionEnd/PreCompact hooks -> flush.py extracts knowledge
         -> SessionStart hook injects index into next session -> cycle repeats
 ```
 
-- **Hooks** capture conversations automatically (session end + pre-compaction safety net)
+- **Hooks** capture conversations automatically — `SessionEnd` + `PreCompact` on CLI, and `SessionStart` (a bounded `backfill --sweep`) on Claude Desktop, where `SessionEnd` doesn't fire
 - **flush.py** calls the Claude Agent SDK to decide what's worth saving, and after 6 PM triggers end-of-day compilation automatically
 - **compile.py** turns daily logs into organized concept articles with cross-references (triggered automatically or run manually)
 - **query.py** answers questions using index-guided retrieval (no RAG needed at personal scale)
 - **lint.py** runs 7 health checks (broken links, orphans, contradictions, staleness)
 
 ## Key Commands
+
+Run these from inside the `claude-memory-compiler/` vault directory, or prefix each with `uv run --directory claude-memory-compiler …` from the project root.
 
 ```bash
 uv run python scripts/compile.py                    # compile new daily logs
