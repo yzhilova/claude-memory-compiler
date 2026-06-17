@@ -1,6 +1,6 @@
 ---
 name: obsidian-kb-setup
-description: Set up a claude-memory-compiler knowledge base vault in the current project folder. Checks prerequisites (uv, Claude credentials, Obsidian, Python, git), clones the patched fork from GitHub, creates the directory structure, wires Claude Code hooks (non-destructively), seeds project-local .env auth, and registers the vault in Obsidian. Use when starting a new project that should have automatic conversation capture and an Obsidian-compatible knowledge base. macOS only.
+description: Set up a claude-memory-compiler knowledge base vault for the current project. Clones the patched fork into a self-contained ./claude-memory-compiler subdirectory, checks prerequisites (uv, Claude credentials, Obsidian, Python, git), wires Claude Code hooks at the project root (non-destructively), seeds project-local .env auth, and registers the vault in Obsidian. Use when starting a new project that should have automatic conversation capture and an Obsidian-compatible knowledge base. macOS only.
 ---
 
 # Setup KB Vault
@@ -8,18 +8,24 @@ description: Set up a claude-memory-compiler knowledge base vault in the current
 ## Purpose
 
 Bootstraps the [claude-memory-compiler](https://github.com/yzhilova/claude-memory-compiler)
-system (a patched fork — see "Why this fork" below) in the current working
-directory. Conversations are automatically captured into daily logs, compiled
-into a structured knowledge base, and injected back into future sessions via
-Claude Code hooks.
+system (a patched fork — see "Why this fork") for the current project.
+Conversations are automatically captured into daily logs, compiled into a
+structured knowledge base, and injected back into future sessions via Claude
+Code hooks.
 
-All steps run from the **current working directory** (the new project folder).
-macOS only.
+**Layout — nested, not flat.** The vault is a self-contained
+`./claude-memory-compiler/` subdirectory of your project (tool + `knowledge/` +
+`daily/` all live inside it). The only thing added to the project root is a
+`.claude/settings.json` with the hooks. This keeps your project clean, matches
+the proven setup, and lets you pull tool updates with
+`cd claude-memory-compiler && git pull`.
+
+macOS only. Run from the **project root**.
 
 ### Why this fork (not coleam00 upstream)
 
-`yzhilova/claude-memory-compiler` carries fixes that upstream lacks. Cloning
-upstream re-introduces these bugs, so always clone the fork:
+`yzhilova/claude-memory-compiler` carries fixes upstream lacks; cloning upstream
+re-introduces these bugs:
 - **Capture fires on Claude Desktop.** `SessionEnd` never runs in the desktop
   app, so upstream's "flush on session end" silently never happens. The fork
   drives capture from `SessionStart` via a bounded, detached `backfill --sweep`.
@@ -29,27 +35,20 @@ upstream re-introduces these bugs, so always clone the fork:
 - **Compile prompt is O(1)**, not O(articles), so compile doesn't fail as the
   KB grows.
 
-## Before you start — read this
+### Before you start — one-vault-per-machine vs per-project
 
-- **Intended for a fresh project or a dedicated vault folder.** This skill adds
-  `hooks/`, `scripts/`, `knowledge/`, `daily/`, `AGENTS.md`, etc. to the
-  **current folder** and wires hooks into its `.claude/settings.json`. It
-  merges into existing `.claude/settings.json` / `.gitignore` rather than
-  overwriting them, but it is still cleanest in a folder dedicated to the vault.
-- **Do not double-wire hooks.** If you already run the compiler hooks at
-  **user level** (`~/.claude/settings.json`), adding **project-level** hooks
-  here makes both fire on every session — double capture, double context
-  injection, and sweeps into the wrong vault. Pick ONE model:
-  - *Per-project vaults* (what this skill sets up): remove the user-level
-    compiler hooks first, so each project captures into its own vault.
-  - *One shared vault*: don't run this skill; keep the user-level hooks.
+This skill sets up a **per-project** vault (project-level hooks). Do not also
+run the compiler hooks at **user level** (`~/.claude/settings.json`) — if both
+are active, every session double-fires and sweeps into the wrong vault. The
+per-project model means: each project captures into its own
+`claude-memory-compiler/` vault, and there are no global compiler hooks.
 
 ---
 
 ## Phase 1: Prerequisite Checks
 
-Run all checks. Fix failures before moving to Phase 2. Do not ask the user to
-run commands manually — handle everything in tool calls.
+Run all checks. Fix failures before Phase 2. Do not ask the user to run commands
+manually — handle everything in tool calls.
 
 ### Check 1 — `uv` installed
 
@@ -63,33 +62,30 @@ uv --version 2>/dev/null || $HOME/.local/bin/uv --version 2>/dev/null
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 ```
-After installing, **always prefix subsequent `uv` calls with `export PATH="$HOME/.local/bin:$PATH" &&`** for the rest of this session, since the shell PATH won't update automatically.
+After installing, **prefix subsequent `uv` calls with `export PATH="$HOME/.local/bin:$PATH" &&`** for the rest of this session.
 
 ### Check 2 — Claude credentials available
 
-The background flush/compile/backfill processes spawn a `claude` CLI that
-**cannot see** the desktop app's host-managed OAuth, so they need their own
-long-lived token. The fork's scripts read it from a project-local `.env`
-(`CLAUDE_CODE_OAUTH_TOKEN`). Check whether a token is already available:
+Background flush/compile/backfill spawn a `claude` CLI that **cannot see** the
+desktop app's host-managed OAuth, so they need their own long-lived token, read
+from `claude-memory-compiler/.env` (`CLAUDE_CODE_OAUTH_TOKEN`). Check whether one
+is available:
 
 ```bash
-# Already exported in the environment?
 echo "$CLAUDE_CODE_OAUTH_TOKEN"
-# Already saved in this project's .env (only exists after Phase 2 on re-runs)?
-[ -f .env ] && grep -q 'CLAUDE_CODE_OAUTH_TOKEN=.\+' .env && echo "token in .env"
+[ -f claude-memory-compiler/.env ] && grep -q 'CLAUDE_CODE_OAUTH_TOKEN=.\+' claude-memory-compiler/.env && echo "token in .env"
 ```
 
-**Pass:** either prints a token / "token in .env". Capture the value as `token`.
+**Pass:** prints a token / "token in .env". Capture the value as `token`.
 **Fail:** the user must generate one. Tell them:
 > In your own terminal (not Claude Code), run: `claude setup-token`
-> It opens a browser (requires a Claude Pro/Max subscription) and prints a
-> `sk-ant-oat01-…` value. If `claude` isn't installed, create an API key at
-> console.anthropic.com → API Keys instead.
-> Paste the token back here.
+> It opens a browser (requires Claude Pro/Max) and prints a `sk-ant-oat01-…`
+> value. If `claude` isn't installed, create an API key at
+> console.anthropic.com → API Keys instead. Paste it back here.
 
-Capture the pasted value as `token`. **It is written to `.env` in Phase 2**
-(after `.env.example` is in place) — never to `~/.zshrc` (non-interactive hook
-shells don't source it) and never committed (`.env` is gitignored).
+Capture the pasted value as `token`; it is written to `.env` in Phase 2 Step 3
+— never to `~/.zshrc` (non-interactive hook shells don't source it), never
+committed (`.env` is gitignored).
 
 ### Check 3 — Obsidian installed
 
@@ -98,7 +94,7 @@ ls /Applications/Obsidian.app 2>/dev/null && echo "found" || echo "not found"
 ```
 
 **Pass:** "found".
-**Fail:** tell the user to download from https://obsidian.md/download — Obsidian is optional for hooks to work but required for the vault UI.
+**Fail:** tell the user to download from https://obsidian.md/download — optional for hooks, required for the vault UI.
 
 ### Check 4 — Python 3.12+ available via `uv`
 
@@ -106,11 +102,8 @@ ls /Applications/Obsidian.app 2>/dev/null && echo "found" || echo "not found"
 export PATH="$HOME/.local/bin:$PATH" && uv python list --only-installed | grep -E "3\.(1[2-9]|[2-9][0-9])"
 ```
 
-**Pass:** at least one installed 3.12+ version listed.
-**Fail:** install automatically without asking the user:
-```bash
-export PATH="$HOME/.local/bin:$PATH" && uv python install 3.12
-```
+**Pass:** at least one 3.12+ version listed.
+**Fail:** `export PATH="$HOME/.local/bin:$PATH" && uv python install 3.12`
 
 ### Check 5 — `git` installed
 
@@ -125,58 +118,55 @@ git --version
 
 ## Phase 2: Scaffold Setup
 
-### Step 1 — Clone scaffold (the fork)
+All paths below are relative to the **project root** (the current directory).
 
-Clear any previous attempt first, then clone the **fork**:
-```bash
-rm -rf /tmp/claude-memory-compiler-scaffold
-git clone --depth 1 https://github.com/yzhilova/claude-memory-compiler /tmp/claude-memory-compiler-scaffold
-```
-
-### Step 2 — Copy scaffold files
+### Step 1 — Clone the fork into a `claude-memory-compiler/` subdir
 
 ```bash
-cp -r /tmp/claude-memory-compiler-scaffold/hooks .
-cp -r /tmp/claude-memory-compiler-scaffold/scripts .
-cp /tmp/claude-memory-compiler-scaffold/AGENTS.md .
-cp /tmp/claude-memory-compiler-scaffold/pyproject.toml .
-cp /tmp/claude-memory-compiler-scaffold/uv.lock .
-cp /tmp/claude-memory-compiler-scaffold/.env.example .
-rm -rf /tmp/claude-memory-compiler-scaffold
-# Start clean: drop any runtime artifacts that rode along
-rm -rf scripts/__pycache__
-rm -f scripts/state.json scripts/last-flush.json scripts/flush.log \
-      scripts/compile.log scripts/backfill-state.json scripts/.backfill.lock
+# Idempotent: skip if it already exists (re-run safety)
+if [ -d claude-memory-compiler/.git ]; then
+  echo "vault already present; pulling latest" && git -C claude-memory-compiler pull --ff-only
+else
+  git clone https://github.com/yzhilova/claude-memory-compiler claude-memory-compiler
+fi
 ```
 
-### Step 3 — Create directory structure
+The clone keeps its `.git` (origin = the fork) so you can `git -C claude-memory-compiler pull` for future tool updates. Its `knowledge/` and `daily/` are gitignored, so your captured content stays local and is never pushed.
+
+### Step 2 — Create vault dirs and clean runtime artifacts
 
 ```bash
-mkdir -p daily
-mkdir -p knowledge/concepts knowledge/connections knowledge/qa
-mkdir -p reports
-mkdir -p .claude
+mkdir -p claude-memory-compiler/daily \
+         claude-memory-compiler/knowledge/concepts \
+         claude-memory-compiler/knowledge/connections \
+         claude-memory-compiler/knowledge/qa \
+         claude-memory-compiler/reports \
+         .claude
+rm -rf claude-memory-compiler/scripts/__pycache__
+rm -f  claude-memory-compiler/scripts/state.json \
+       claude-memory-compiler/scripts/last-flush.json \
+       claude-memory-compiler/scripts/flush.log \
+       claude-memory-compiler/scripts/compile.log \
+       claude-memory-compiler/scripts/backfill-state.json \
+       claude-memory-compiler/scripts/.backfill.lock
 ```
 
-### Step 4 — Seed project-local `.env` auth
+### Step 3 — Seed `.env` auth (inside the vault)
 
-Write the `token` captured in Check 2 into `.env` (copy from `.env.example` so
-its comments survive). Use the Write/Edit tools or Python — never `echo >>`
-(long tokens get split across lines). `.env` is gitignored; never commit it.
+Write the `token` from Check 2 into `claude-memory-compiler/.env`, copying from
+`.env.example` so its comments survive. Never `echo >>` (long tokens get split).
 
 ```python
 import pathlib
 token = "<token from Check 2>"  # the sk-ant-oat01-… string
-example = pathlib.Path(".env.example")
-env = pathlib.Path(".env")
+vault = pathlib.Path("claude-memory-compiler")
+example = vault / ".env.example"
+env = vault / ".env"
 base = example.read_text() if example.exists() else "CLAUDE_CODE_OAUTH_TOKEN=\n"
-# Fill the empty value on the CLAUDE_CODE_OAUTH_TOKEN line.
-lines = []
-done = False
+lines, done = [], False
 for line in base.splitlines():
     if line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") and not done:
-        lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token}")
-        done = True
+        lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token}"); done = True
     else:
         lines.append(line)
 if not done:
@@ -184,80 +174,72 @@ if not done:
 env.write_text("\n".join(lines) + "\n")
 ```
 
-### Step 5 — Wire Claude Code hooks (non-destructive merge)
+### Step 4 — Wire Claude Code hooks at the project root (non-destructive merge)
 
-**Merge** the hooks into `.claude/settings.json` instead of overwriting it, so
-an existing project keeps its other settings. Run this Python:
+Write **absolute-path** hooks into `.claude/settings.json` (computed from the
+current project path, so they work regardless of where Claude Code is launched
+from). Merge into any existing settings rather than overwriting. Run this Python:
 
 ```python
-import json, pathlib
-settings_path = pathlib.Path(".claude/settings.json")
+import json, pathlib, shutil
+project = pathlib.Path.cwd().resolve()
+vault = project / "claude-memory-compiler"
+uv = shutil.which("uv") or str(pathlib.Path.home() / ".local" / "bin" / "uv")
+
+def hook(script, timeout):
+    cmd = f"{uv} run --directory {vault} python {vault}/hooks/{script}"
+    return {"matcher": "", "hooks": [{"type": "command", "command": cmd, "timeout": timeout}]}
+
+settings_path = project / ".claude" / "settings.json"
 settings = {}
 if settings_path.exists():
     try:
         settings = json.loads(settings_path.read_text() or "{}")
     except json.JSONDecodeError:
         settings = {}
-
-def hook(script):
-    return {
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": f'export PATH="$HOME/.local/bin:$PATH" && uv run python hooks/{script}',
-            "timeout": 15,
-        }],
-    }
-
 settings.setdefault("hooks", {})
-settings["hooks"]["SessionStart"] = [hook("session-start.py")]
-settings["hooks"]["PreCompact"] = [hook("pre-compact.py")]
-settings["hooks"]["SessionEnd"] = [hook("session-end.py")]
+settings["hooks"]["SessionStart"] = [hook("session-start.py", 15)]
+settings["hooks"]["PreCompact"]   = [hook("pre-compact.py", 10)]
+settings["hooks"]["SessionEnd"]   = [hook("session-end.py", 10)]
+settings_path.parent.mkdir(parents=True, exist_ok=True)
 settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 ```
 
-> Note: on Claude Desktop, `SessionEnd`/`PreCompact` may not fire — the
-> `SessionStart` hook also drives a bounded `backfill --sweep` of recent prior
-> sessions, so capture still happens. All three are wired for portability
-> (CLI sessions do fire `SessionEnd`).
+> On Claude Desktop, `SessionEnd`/`PreCompact` may not fire — the `SessionStart`
+> hook also drives a bounded `backfill --sweep`, so capture still happens. All
+> three are wired for portability (CLI sessions do fire `SessionEnd`).
 
-### Step 6 — Update `pyproject.toml` project name
+### Step 5 — Name the vault's Python project
 
-Derive the name from the current folder and write it into `pyproject.toml`:
 ```python
 import pathlib, re
 folder = pathlib.Path.cwd().name.lower()
 name = re.sub(r'[^a-z0-9]+', '-', folder).strip('-') + '-kb'
-toml_path = pathlib.Path('pyproject.toml')
+toml_path = pathlib.Path('claude-memory-compiler/pyproject.toml')
 content = toml_path.read_text()
 content = re.sub(r'(?m)^name = ".*"', f'name = "{name}"', content)
 toml_path.write_text(content)
 ```
 
-### Step 7 — Ensure vault paths are gitignored (non-destructive)
+### Step 6 — Ignore the vault in the host project (if it's a git repo)
 
-If this folder is (or will be) a git repo, make sure generated vault content
-and secrets are ignored — **append** missing entries rather than overwrite an
-existing `.gitignore`:
+The vault is its own git clone, so the host project should not track it. Append
+non-destructively only if the host is a git repo:
 
 ```python
 import pathlib
-gi = pathlib.Path(".gitignore")
-needed = ["daily/", "knowledge/", "reports/", ".env", ".env.local",
-          ".obsidian/", "scripts/state.json", "scripts/last-flush.json",
-          "scripts/flush.log", "scripts/compile.log",
-          "scripts/backfill-state.json", "scripts/.backfill.lock",
-          "scripts/__pycache__/"]
-existing = gi.read_text().splitlines() if gi.exists() else []
-missing = [e for e in needed if e not in existing]
-if missing:
-    block = "\n# claude-memory-compiler vault (generated + secrets)\n" + "\n".join(missing) + "\n"
-    gi.write_text((gi.read_text().rstrip() + "\n" if gi.exists() else "") + block)
+if pathlib.Path(".git").exists():
+    gi = pathlib.Path(".gitignore")
+    entry = "claude-memory-compiler/"
+    existing = gi.read_text().splitlines() if gi.exists() else []
+    if entry not in existing:
+        prefix = (gi.read_text().rstrip() + "\n") if gi.exists() else ""
+        gi.write_text(prefix + "\n# claude-memory-compiler vault (own repo + local content)\n" + entry + "\n")
 ```
 
-### Step 8 — Initialize knowledge base index files
+### Step 7 — Initialize knowledge base index files
 
-Create `knowledge/index.md`:
+Create `claude-memory-compiler/knowledge/index.md`:
 ```markdown
 # Knowledge Base Index
 
@@ -265,38 +247,41 @@ Create `knowledge/index.md`:
 |---------|---------|---------------|---------|
 ```
 
-Create `knowledge/log.md`:
+Create `claude-memory-compiler/knowledge/log.md`:
 ```markdown
 # Build Log
 ```
 
-### Step 9 — Install Python dependencies
+### Step 8 — Install Python dependencies
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH" && uv sync
+export PATH="$HOME/.local/bin:$PATH" && uv sync --directory claude-memory-compiler
 ```
 
 ---
 
 ## Phase 3: Obsidian Vault Registration
 
+The Obsidian vault is the `claude-memory-compiler/` directory (where `knowledge/`
+and `daily/` live).
+
 Read the current vault config:
 ```bash
 cat ~/Library/Application\ Support/obsidian/obsidian.json
 ```
 
-Generate values for the new vault entry:
+Generate values for the new entry:
 ```bash
-pwd                                                        # absolute path
+echo "$(pwd)/claude-memory-compiler"                      # vault path
 python3 -c "import time; print(int(time.time()*1000))"    # timestamp ms
 openssl rand -hex 8                                        # new vault ID
 ```
 
-Add the new entry under `vaults`, preserving all existing entries, and write the file back using the Write tool (never `echo` or `>>` for JSON files):
+Add the new entry under `vaults`, preserving all existing entries, and write the file back with the Write tool (never `echo`/`>>` for JSON):
 ```json
 "<new-hex-id>": {
-  "path": "<output of pwd>",
-  "ts": <output of python3 timestamp>,
+  "path": "<pwd>/claude-memory-compiler",
+  "ts": <timestamp>,
   "open": false
 }
 ```
@@ -305,29 +290,26 @@ Add the new entry under `vaults`, preserving all existing entries, and write the
 
 ## Phase 4: Verification
 
-1. **Close and reopen Claude Code** in this project folder — the SessionStart
-   hook should fire and inject a "Knowledge Base Catalog" block into the
-   session context.
+1. **Close and reopen Claude Code** in the project root — the SessionStart hook
+   should inject a "Knowledge Base Catalog" block into the session.
 
-2. **Confirm auth works** (background capture depends on it):
+2. **Confirm auth** (background capture depends on it):
    ```bash
-   export PATH="$HOME/.local/bin:$PATH" && uv run python scripts/flush.py --self-test 2>/dev/null || \
-   export PATH="$HOME/.local/bin:$PATH" && uv run python -c "from dotenv import load_dotenv; import os; load_dotenv('.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
+   export PATH="$HOME/.local/bin:$PATH" && uv run --directory claude-memory-compiler python -c "from dotenv import load_dotenv; import os; load_dotenv('.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
    ```
-   Expect `token present: True`. (If `flush.py` later logs `FLUSH_ERROR`, the
-   token is missing or invalid — see Troubleshooting.)
+   Expect `token present: True`.
 
-3. **Open Obsidian** — the new vault should appear in the vault switcher. Open
-   it; Obsidian will create `.obsidian/` config on first open.
+3. **Open Obsidian** — the new vault appears in the switcher. Open it; Obsidian
+   creates `.obsidian/` on first open.
 
-4. **After a few sessions**, compile the daily logs into articles:
+4. **After a few sessions**, compile daily logs into articles:
    ```bash
-   export PATH="$HOME/.local/bin:$PATH" && uv run python scripts/compile.py
+   export PATH="$HOME/.local/bin:$PATH" && uv run --directory claude-memory-compiler python scripts/compile.py
    ```
 
-5. **Health check** at any time:
+5. **Health check** any time:
    ```bash
-   export PATH="$HOME/.local/bin:$PATH" && uv run python scripts/lint.py --structural-only
+   export PATH="$HOME/.local/bin:$PATH" && uv run --directory claude-memory-compiler python scripts/lint.py --structural-only
    ```
 
 ---
@@ -336,11 +318,10 @@ Add the new entry under `vaults`, preserving all existing entries, and write the
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| SessionStart hook doesn't fire | `uv` not installed / not in PATH at hook time | Hook commands prefix `export PATH="$HOME/.local/bin:$PATH"`; ensure uv is in `~/.local/bin` and run `uv sync` |
-| `flush.py` logs `FLUSH_ERROR` in `scripts/flush.log` | Missing/invalid token | Confirm `.env` has a valid `CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…`; regenerate with `claude setup-token` |
-| Context injected twice / sweeps into the wrong vault | Both user-level AND project-level compiler hooks active | Remove one set (see "Before you start") |
-| Sweep captures nothing on Claude Desktop | Older session-start.py without the transcript_path fix | You're on upstream, not the fork — re-clone from `yzhilova/claude-memory-compiler` |
-| `uv sync` fails with Python version error | No 3.12+ installed | `export PATH="$HOME/.local/bin:$PATH" && uv python install 3.12` |
-| Obsidian vault doesn't appear | `obsidian.json` not saved correctly | Verify JSON is valid; restart Obsidian |
+| SessionStart hook doesn't fire | `uv` not on PATH at hook time | Hooks use an absolute `uv` path computed at setup; if uv moved, re-run Step 4 |
+| `flush.py` logs `FLUSH_ERROR` in `claude-memory-compiler/scripts/flush.log` | Missing/invalid token | Confirm `claude-memory-compiler/.env` has a valid `CLAUDE_CODE_OAUTH_TOKEN`; regenerate with `claude setup-token` |
+| Context injected twice / sweeps into the wrong vault | Both user-level AND project-level compiler hooks active | Remove the user-level hooks (see "Before you start") |
+| Sweep captures nothing on Claude Desktop | Vault is upstream, not the fork | `git -C claude-memory-compiler remote -v` should be `yzhilova/...`; re-clone if not |
+| `uv sync` fails with a Python version error | No 3.12+ installed | `export PATH="$HOME/.local/bin:$PATH" && uv python install 3.12` |
+| Obsidian vault doesn't appear | `obsidian.json` invalid | Verify JSON; restart Obsidian |
 | Hooks fire but daily log stays empty | Session too short | Normal — `MIN_TURNS_TO_FLUSH = 1` in `session-end.py` |
-| `git clone` fails with "destination path exists" | Previous failed attempt | `rm -rf /tmp/claude-memory-compiler-scaffold` then retry |

@@ -5,9 +5,12 @@ and are activated by installing them at the user level.
 
 ## `obsidian-kb-setup`
 
-Bootstraps a fresh claude-memory-compiler vault in the current project: checks
-prerequisites, clones **this fork**, wires Claude Code hooks (non-destructively),
-seeds project-local `.env` auth, and registers the vault in Obsidian. macOS only.
+Bootstraps a claude-memory-compiler vault for the current project: clones **this
+fork** into a self-contained `./claude-memory-compiler/` subdirectory (tool +
+`knowledge/` + `daily/`), wires Claude Code hooks at the project root
+(non-destructively), seeds project-local `.env` auth, and registers the vault in
+Obsidian. The only thing added to your project root is `.claude/settings.json`.
+macOS only.
 
 ### Install (user-level, available in every project)
 
