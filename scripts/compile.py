@@ -31,12 +31,16 @@ from utils import (
 # ── Paths for the LLM to use ──────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-# Headless auth: load CLAUDE_CODE_OAUTH_TOKEN from the project .env so the
-# claude CLI the Agent SDK spawns is authenticated outside the desktop app.
+# Headless auth: the claude CLI the Agent SDK spawns can't see the desktop
+# app's host-managed OAuth, so it needs CLAUDE_CODE_OAUTH_TOKEN from a .env.
+# Resolution order (first wins — load_dotenv never overrides an already-set
+# var): the project-local .env, then a shared machine-wide file, so the token
+# can be set ONCE and reused by every vault instead of one copy per project.
 try:
     from dotenv import load_dotenv
 
     load_dotenv(ROOT_DIR / ".env")
+    load_dotenv(Path.home() / ".config" / "claude-memory-compiler" / ".env")
 except ImportError:
     pass
 

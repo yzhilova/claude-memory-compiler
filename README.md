@@ -5,7 +5,7 @@
 > **Fork note.** This is a patched fork of [coleam00/claude-memory-compiler](https://github.com/coleam00/claude-memory-compiler) maintained for reuse across multiple projects. Fixes on top of upstream:
 > - **Capture actually fires on Claude Desktop** — `SessionEnd` never runs there ([claude-code#45514](https://github.com/anthropics/claude-code/issues/45514)), so capture is driven from `SessionStart` via a bounded, detached `backfill --sweep`.
 > - **Sweep is scoped to the current project** — without `--project` the sweep ingested sessions from *every* repo under `~/.claude/projects/`; it now derives and passes the project id (using the `--project=` form, since the id starts with `-`).
-> - **Headless auth** — `flush.py`/`compile.py` load `CLAUDE_CODE_OAUTH_TOKEN` from `.env` so the spawned CLI authenticates outside the desktop app.
+> - **Headless auth, set once** — `flush.py`/`compile.py` load `CLAUDE_CODE_OAUTH_TOKEN` from a shared `~/.config/claude-memory-compiler/.env` (or a project-local `.env` override), so the token is configured once per machine, not once per project.
 > - **Compile prompt no longer scales O(N)** — it stopped inlining every article body (which blew past the input window as the KB grew) in favor of index-guided retrieval.
 > - Concurrency lock against duplicate daily-log blocks; captured CLI stderr in `FLUSH_ERROR`; compact, never-truncated context catalog at session start.
 >
@@ -42,9 +42,10 @@ From the project root, in Claude Code:
 ```
 
 It clones the fork into a self-contained `./claude-memory-compiler/` subdirectory,
-wires the project hooks, seeds `.env` auth (it asks you for a `claude setup-token`
-value if one isn't already in your environment), and registers the Obsidian
-vault. The only thing added to your project root is `.claude/settings.json`.
+wires the project hooks, reuses your machine-wide auth token (it asks for a
+`claude setup-token` value only the *first* time on a machine, then stores it in
+`~/.config/claude-memory-compiler/.env` for every future project), and registers
+the Obsidian vault. The only thing added to your project root is `.claude/settings.json`.
 
 ### 3. Verify it's set up correctly
 
@@ -53,7 +54,7 @@ Reopen Claude Code in the project (hooks load at session start), then confirm:
 - **Context injection** — a "Knowledge Base Catalog" block appears in the new session. That's the SessionStart hook firing.
 - **Auth** (background capture depends on it):
   ```bash
-  uv run --directory claude-memory-compiler python -c "from dotenv import load_dotenv; import os; load_dotenv('.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
+  uv run --directory claude-memory-compiler python -c "from dotenv import load_dotenv; from pathlib import Path; import os; load_dotenv('.env'); load_dotenv(Path.home()/'.config'/'claude-memory-compiler'/'.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
   ```
   Expect `token present: True`.
 - **Structural health**:
@@ -75,9 +76,9 @@ uv run --directory claude-memory-compiler python scripts/compile.py
 > `claude-memory-compiler/` subfolder of this project and `uv sync` it. Add a
 > project-root `.claude/settings.json` whose SessionStart/PreCompact/SessionEnd
 > hooks run that subfolder's `hooks/*.py` via `uv run --directory
-> claude-memory-compiler` (merge, don't overwrite). Create
-> `claude-memory-compiler/.env` with my `CLAUDE_CODE_OAUTH_TOKEN`. Read its
-> AGENTS.md for the full technical reference."*
+> claude-memory-compiler` (merge, don't overwrite). My
+> `CLAUDE_CODE_OAUTH_TOKEN` is already in `~/.config/claude-memory-compiler/.env`
+> (shared across projects). Read its AGENTS.md for the full technical reference."*
 
 ## How It Works
 

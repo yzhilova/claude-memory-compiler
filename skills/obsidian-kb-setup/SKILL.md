@@ -1,6 +1,6 @@
 ---
 name: obsidian-kb-setup
-description: Set up a claude-memory-compiler knowledge base vault for the current project. Clones the patched fork into a self-contained ./claude-memory-compiler subdirectory, checks prerequisites (uv, Claude credentials, Obsidian, Python, git), wires Claude Code hooks at the project root (non-destructively), seeds project-local .env auth, and registers the vault in Obsidian. Use when starting a new project that should have automatic conversation capture and an Obsidian-compatible knowledge base. macOS only.
+description: Set up a claude-memory-compiler knowledge base vault for the current project. Clones the patched fork into a self-contained ./claude-memory-compiler subdirectory, checks prerequisites (uv, Claude credentials, Obsidian, Python, git), wires Claude Code hooks at the project root (non-destructively), reuses a machine-wide auth token, and registers the vault in Obsidian. Use when starting a new project that should have automatic conversation capture and an Obsidian-compatible knowledge base. macOS only.
 ---
 
 # Setup KB Vault
@@ -31,7 +31,9 @@ re-introduces these bugs:
   drives capture from `SessionStart` via a bounded, detached `backfill --sweep`.
 - **Sweep is project-scoped** (reads the active project from the hook's
   `transcript_path`) so it can't ingest other repos' sessions.
-- **Headless auth** via project-local `.env` (`CLAUDE_CODE_OAUTH_TOKEN`).
+- **Headless auth, set once.** The token is read from a shared
+  `~/.config/claude-memory-compiler/.env` (or a project-local `.env` override),
+  so you configure it once per machine — not once per project.
 - **Compile prompt is O(1)**, not O(articles), so compile doesn't fail as the
   KB grows.
 
@@ -64,28 +66,32 @@ source $HOME/.local/bin/env
 ```
 After installing, **prefix subsequent `uv` calls with `export PATH="$HOME/.local/bin:$PATH" &&`** for the rest of this session.
 
-### Check 2 — Claude credentials available
+### Check 2 — Claude credentials available (set once, machine-wide)
 
 Background flush/compile/backfill spawn a `claude` CLI that **cannot see** the
-desktop app's host-managed OAuth, so they need their own long-lived token, read
-from `claude-memory-compiler/.env` (`CLAUDE_CODE_OAUTH_TOKEN`). Check whether one
-is available:
+desktop app's host-managed OAuth, so they need a long-lived
+`CLAUDE_CODE_OAUTH_TOKEN`. **This token is tied to your account, not the
+project** — it is the same value everywhere, so it's set ONCE in a shared file
+that every vault reuses. The scripts resolve it from the project-local `.env`
+first, then the shared file `~/.config/claude-memory-compiler/.env`.
+
+Check whether it's already configured:
 
 ```bash
 echo "$CLAUDE_CODE_OAUTH_TOKEN"
-[ -f claude-memory-compiler/.env ] && grep -q 'CLAUDE_CODE_OAUTH_TOKEN=.\+' claude-memory-compiler/.env && echo "token in .env"
+[ -f ~/.config/claude-memory-compiler/.env ] && grep -q 'CLAUDE_CODE_OAUTH_TOKEN=.\+' ~/.config/claude-memory-compiler/.env && echo "token in shared file"
 ```
 
-**Pass:** prints a token / "token in .env". Capture the value as `token`.
-**Fail:** the user must generate one. Tell them:
+**Pass** (token already in the environment or the shared file): nothing to do —
+**skip Step 3**.
+**Fail** (first time on this machine only): ask the user to generate one:
 > In your own terminal (not Claude Code), run: `claude setup-token`
 > It opens a browser (requires Claude Pro/Max) and prints a `sk-ant-oat01-…`
 > value. If `claude` isn't installed, create an API key at
 > console.anthropic.com → API Keys instead. Paste it back here.
 
-Capture the pasted value as `token`; it is written to `.env` in Phase 2 Step 3
-— never to `~/.zshrc` (non-interactive hook shells don't source it), never
-committed (`.env` is gitignored).
+Capture the pasted value as `token` and write the shared file in Step 3. Never
+write it to `~/.zshrc` (non-interactive hook shells don't source it).
 
 ### Check 3 — Obsidian installed
 
@@ -151,28 +157,24 @@ rm -f  claude-memory-compiler/scripts/state.json \
        claude-memory-compiler/scripts/.backfill.lock
 ```
 
-### Step 3 — Seed `.env` auth (inside the vault)
+### Step 3 — Seed the shared token (first machine setup only)
 
-Write the `token` from Check 2 into `claude-memory-compiler/.env`, copying from
-`.env.example` so its comments survive. Never `echo >>` (long tokens get split).
+**Skip this entirely if Check 2 passed.** Otherwise write the `token` to the
+shared file so this and every future project reuse it. Never `echo >>` (long
+tokens get split across lines). It's `chmod 600` and lives outside any repo.
 
 ```python
 import pathlib
 token = "<token from Check 2>"  # the sk-ant-oat01-… string
-vault = pathlib.Path("claude-memory-compiler")
-example = vault / ".env.example"
-env = vault / ".env"
-base = example.read_text() if example.exists() else "CLAUDE_CODE_OAUTH_TOKEN=\n"
-lines, done = [], False
-for line in base.splitlines():
-    if line.startswith("CLAUDE_CODE_OAUTH_TOKEN=") and not done:
-        lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token}"); done = True
-    else:
-        lines.append(line)
-if not done:
-    lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token}")
-env.write_text("\n".join(lines) + "\n")
+shared = pathlib.Path.home() / ".config" / "claude-memory-compiler" / ".env"
+shared.parent.mkdir(parents=True, exist_ok=True)
+shared.write_text(f"CLAUDE_CODE_OAUTH_TOKEN={token}\n")
+shared.chmod(0o600)
 ```
+
+> Need a different token for one specific project (e.g. a separate account)?
+> Drop a `claude-memory-compiler/.env` with `CLAUDE_CODE_OAUTH_TOKEN=…` in that
+> project — a project-local `.env` takes precedence over the shared file.
 
 ### Step 4 — Wire Claude Code hooks at the project root (non-destructive merge)
 
@@ -295,7 +297,7 @@ Add the new entry under `vaults`, preserving all existing entries, and write the
 
 2. **Confirm auth** (background capture depends on it):
    ```bash
-   export PATH="$HOME/.local/bin:$PATH" && uv run --directory claude-memory-compiler python -c "from dotenv import load_dotenv; import os; load_dotenv('.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
+   export PATH="$HOME/.local/bin:$PATH" && uv run --directory claude-memory-compiler python -c "from dotenv import load_dotenv; from pathlib import Path; import os; load_dotenv('.env'); load_dotenv(Path.home()/'.config'/'claude-memory-compiler'/'.env'); print('token present:', bool(os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')))"
    ```
    Expect `token present: True`.
 
@@ -319,7 +321,7 @@ Add the new entry under `vaults`, preserving all existing entries, and write the
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | SessionStart hook doesn't fire | `uv` not on PATH at hook time | Hooks use an absolute `uv` path computed at setup; if uv moved, re-run Step 4 |
-| `flush.py` logs `FLUSH_ERROR` in `claude-memory-compiler/scripts/flush.log` | Missing/invalid token | Confirm `claude-memory-compiler/.env` has a valid `CLAUDE_CODE_OAUTH_TOKEN`; regenerate with `claude setup-token` |
+| `flush.py` logs `FLUSH_ERROR` in `claude-memory-compiler/scripts/flush.log` | Missing/invalid token | Confirm the token is set — `~/.config/claude-memory-compiler/.env` (shared) or the project's own `.env`; regenerate with `claude setup-token` |
 | Context injected twice / sweeps into the wrong vault | Both user-level AND project-level compiler hooks active | Remove the user-level hooks (see "Before you start") |
 | Sweep captures nothing on Claude Desktop | Vault is upstream, not the fork | `git -C claude-memory-compiler remote -v` should be `yzhilova/...`; re-clone if not |
 | `uv sync` fails with a Python version error | No 3.12+ installed | `export PATH="$HOME/.local/bin:$PATH" && uv python install 3.12` |
