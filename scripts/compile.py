@@ -31,6 +31,15 @@ from utils import (
 # ── Paths for the LLM to use ──────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
+# Headless auth: load CLAUDE_CODE_OAUTH_TOKEN from the project .env so the
+# claude CLI the Agent SDK spawns is authenticated outside the desktop app.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT_DIR / ".env")
+except ImportError:
+    pass
+
 
 async def compile_daily_log(log_path: Path, state: dict) -> float:
     """Compile a single daily log into knowledge articles.
@@ -49,19 +58,16 @@ async def compile_daily_log(log_path: Path, state: dict) -> float:
     schema = AGENTS_FILE.read_text(encoding="utf-8")
     wiki_index = read_wiki_index()
 
-    # Read existing articles for context
-    existing_articles_context = ""
-    existing = {}
-    for article_path in list_wiki_articles():
-        rel = article_path.relative_to(KNOWLEDGE_DIR)
-        existing[str(rel)] = article_path.read_text(encoding="utf-8")
-
-    if existing:
-        parts = []
-        for rel_path, content in existing.items():
-            parts.append(f"### {rel_path}\n```markdown\n{content}\n```")
-        existing_articles_context = "\n\n".join(parts)
-
+    # Index-guided retrieval (NOT "embed every article body"). Stuffing all
+    # article bodies into the prompt is an O(N) cliff: post the 2026-05-19
+    # auto-memory migration the KB jumped 71 -> 217 articles (~1.2 MB /
+    # ~300K tokens), which blew past the model's input window and made every
+    # compile call fail instantly with "Command failed with exit code 1" at
+    # $0. The compiler agent already has Read/Grep/Glob + cwd=ROOT_DIR, so it
+    # reads only the few existing articles a given daily log actually touches
+    # — exactly the index-first design AGENTS.md describes. Keeps the prompt
+    # ~constant regardless of KB size.
+    article_count = len(list_wiki_articles())
     timestamp = now_iso()
 
     prompt = f"""You are a knowledge compiler. Your job is to read a daily conversation log
@@ -71,13 +77,16 @@ and extract knowledge into structured wiki articles.
 
 {schema}
 
-## Current Wiki Index
+## Current Wiki Index ({article_count} existing articles)
+
+This index is your retrieval map. The full article bodies are NOT inlined
+(the KB is too large to fit). You have the Read, Grep and Glob tools and the
+working directory is the vault root. Before creating or updating any article,
+Grep/Read the specific existing articles this daily log actually relates to
+(by slug from the index) so you UPDATE the right article instead of creating
+a near-duplicate. Only read what's relevant — do not read all articles.
 
 {wiki_index}
-
-## Existing Wiki Articles
-
-{existing_articles_context if existing_articles_context else "(No existing articles yet)"}
 
 ## Daily Log to Compile
 

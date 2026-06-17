@@ -29,6 +29,15 @@ SCRIPTS_DIR = ROOT / "scripts"
 STATE_FILE = SCRIPTS_DIR / "last-flush.json"
 LOG_FILE = SCRIPTS_DIR / "flush.log"
 
+# Headless auth: load CLAUDE_CODE_OAUTH_TOKEN from the project .env so the
+# claude CLI the Agent SDK spawns is authenticated outside the desktop app.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
 # Set up file-based logging so we can verify the background process ran.
 # The parent process sends stdout/stderr to DEVNULL (to avoid the inherited
 # file handle bug on Windows), so this is our only observability channel.
@@ -115,6 +124,7 @@ respond with exactly: FLUSH_OK
 {context}"""
 
     response = ""
+    stderr_lines: list[str] = []
 
     try:
         async for message in query(
@@ -123,6 +133,7 @@ respond with exactly: FLUSH_OK
                 cwd=str(ROOT),
                 allowed_tools=[],
                 max_turns=2,
+                stderr=stderr_lines.append,
             ),
         ):
             if isinstance(message, AssistantMessage):
@@ -133,8 +144,12 @@ respond with exactly: FLUSH_OK
                 pass
     except Exception as e:
         import traceback
-        logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
-        response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
+        stderr_tail = "\n".join(stderr_lines[-50:]) or "<no stderr captured>"
+        logging.error(
+            "Agent SDK error: %s\n%s\nCLI stderr (last 50 lines):\n%s",
+            e, traceback.format_exc(), stderr_tail,
+        )
+        response = f"FLUSH_ERROR: {type(e).__name__}: {e}\nCLI stderr: {stderr_tail}"
 
     return response
 
